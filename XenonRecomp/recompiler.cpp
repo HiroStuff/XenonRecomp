@@ -3370,12 +3370,12 @@ bool Recompiler::Recompile(
     case PPC_INST_VSLO:
     case PPC_INST_VSLO128:
         printSetFlushMode(true);
-        println("\tsimd::vec128i shift_amt = simd::srli_i16({}.v128, 3);", v(insn.operands[2]));
-        println("\tint shift = simd::extract_u8(shift_amt, 15) & 0x1F;");
-        println("\tif (shift >= 16) {{");
-        println("\t\t{}.v128 = simd::zero_i128();", v(insn.operands[0]));
-        println("\t}} else {{");
-        println("\t\t{}.v128 = simd::alignr_i8(simd::zero_i128(), {}.v128, 16 - shift);", v(insn.operands[0]), v(insn.operands[1]));
+        println("\t{{");
+        println("\t\tconst int shift = {}.u8[15] >> 3;", v(insn.operands[2]));
+        println("\t\tfor (int i = 0; i < 16; i++)");
+        println("\t\t\t{}.u8[i] = shift < 16 && i < shift ? {}.u8[i + 16 - shift] : 0;", vTemp(), v(insn.operands[1]));
+        println("\t\t{}.u64[0] = {}.u64[0];", v(insn.operands[0]), vTemp());
+        println("\t\t{}.u64[1] = {}.u64[1];", v(insn.operands[0]), vTemp());
         println("\t}}");
         break;
 
