@@ -113,6 +113,15 @@
 #define PPC_CALL_INDIRECT_FUNC(x) (PPC_LOOKUP_FUNC(base, x))(ctx, base)
 #endif
 
+namespace mem
+{
+    template <bool>
+    inline uint16_t loadVolatileU16(const uint8_t* address) noexcept
+    {
+        return *reinterpret_cast<const volatile uint16_t*>(address);
+    }
+}
+
 typedef void PPCFunc(struct PPCContext& __restrict__ ctx, uint8_t* base);
 
 struct PPCFuncMapping

@@ -427,6 +427,22 @@ bool Recompiler::Recompile(
             }
         };
 
+    auto printCounterConditionalBranch = [&](uint32_t target, const std::string& condition)
+        {
+            if (target < fn.base || target >= fn.base + fn.size)
+            {
+                println("\tif ({}) {{", condition);
+                print("\t");
+                printFunctionCall(target);
+                println("\t\treturn;");
+                println("\t}}");
+            }
+            else
+            {
+                println("\tif ({}) goto loc_{:X};", condition, target);
+            }
+        };
+
     auto printSetFlushMode = [&](bool enable)
         {
             auto newState = enable ? CSRState::VMX : CSRState::FPU;
@@ -696,7 +712,7 @@ bool Recompiler::Recompile(
 
     case PPC_INST_BDZ:
         println("\t--{}.u64;", ctr());
-        println("\tif ({}.u32 == 0) goto loc_{:X};", ctr(), insn.operands[0]);
+        printCounterConditionalBranch(insn.operands[0], fmt::format("{}.u32 == 0", ctr()));
         break;
 
 
@@ -708,21 +724,21 @@ bool Recompiler::Recompile(
 
     case PPC_INST_BDNZ:
         println("\t--{}.u64;", ctr());
-        println("\tif ({}.u32 != 0) goto loc_{:X};", ctr(), insn.operands[0]);
+        printCounterConditionalBranch(insn.operands[0], fmt::format("{}.u32 != 0", ctr()));
         break;
 
 
     case PPC_INST_BDNZF:
         // NOTE: assuming eq here as a shortcut because all the instructions in the game do that
         println("\t--{}.u64;", ctr());
-        println("\tif ({}.u32 != 0 && !{}.eq) goto loc_{:X};", ctr(), cr(insn.operands[0] / 4), insn.operands[1]);
+        printCounterConditionalBranch(insn.operands[1], fmt::format("{}.u32 != 0 && !{}.eq", ctr(), cr(insn.operands[0] / 4)));
         break;
 
 
     case PPC_INST_BDNZT:
         // NOTE(crack): Same note as BDNZF but true instead of false
         println("\t--{}.u64;", ctr());
-        println("\tif ({}.u32 != 0 && {}.eq) goto loc_{:X};", ctr(), cr(insn.operands[0] / 4), insn.operands[1]);
+        printCounterConditionalBranch(insn.operands[1], fmt::format("{}.u32 != 0 && {}.eq", ctr(), cr(insn.operands[0] / 4)));
         break;
 
 
@@ -3054,7 +3070,7 @@ bool Recompiler::Recompile(
     {
         constexpr std::string_view fields[] = { "lt", "gt", "eq", "so" };
         println("\t--{}.u64;", ctr());
-        println("\tif ({}.u32 == 0 && !{}.{}) goto loc_{:X};", ctr(), cr(insn.operands[0] / 4), fields[insn.operands[0] % 4], insn.operands[1]);
+        printCounterConditionalBranch(insn.operands[1], fmt::format("{}.u32 == 0 && !{}.{}", ctr(), cr(insn.operands[0] / 4), fields[insn.operands[0] % 4]));
         break;
     }
 
