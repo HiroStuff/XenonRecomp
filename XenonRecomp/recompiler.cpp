@@ -2643,7 +2643,7 @@ bool Recompiler::Recompile(
             break;
 
         case 5: // float16_4
-            if (insn.operands[3] != 2 || insn.operands[4] != 2)
+            if (insn.operands[3] != 2 || (insn.operands[4] != 0 && insn.operands[4] != 2))
                 fmt::println("Unexpected float16_4 pack instruction at {:X}", base);
 
             for (size_t i = 0; i < 4; i++)
@@ -3368,6 +3368,7 @@ bool Recompiler::Recompile(
 
 
     case PPC_INST_VSLO:
+    case PPC_INST_VSLO128:
         printSetFlushMode(true);
         println("\tsimd::vec128i shift_amt = simd::srli_i16({}.v128, 3);", v(insn.operands[2]));
         println("\tint shift = simd::extract_u8(shift_amt, 15) & 0x1F;");
