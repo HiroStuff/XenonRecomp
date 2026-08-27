@@ -427,6 +427,22 @@ bool Recompiler::Recompile(
             }
         };
 
+    auto printCounterConditionalBranch = [&](uint32_t target, const std::string& condition)
+        {
+            if (target < fn.base || target >= fn.base + fn.size)
+            {
+                println("\tif ({}) {{", condition);
+                print("\t");
+                printFunctionCall(target);
+                println("\t\treturn;");
+                println("\t}}");
+            }
+            else
+            {
+                println("\tif ({}) goto loc_{:X};", condition, target);
+            }
+        };
+
     auto printSetFlushMode = [&](bool enable)
         {
             auto newState = enable ? CSRState::VMX : CSRState::FPU;
@@ -696,7 +712,7 @@ bool Recompiler::Recompile(
 
     case PPC_INST_BDZ:
         println("\t--{}.u64;", ctr());
-        println("\tif ({}.u32 == 0) goto loc_{:X};", ctr(), insn.operands[0]);
+        printCounterConditionalBranch(insn.operands[0], fmt::format("{}.u32 == 0", ctr()));
         break;
 
 
@@ -708,21 +724,21 @@ bool Recompiler::Recompile(
 
     case PPC_INST_BDNZ:
         println("\t--{}.u64;", ctr());
-        println("\tif ({}.u32 != 0) goto loc_{:X};", ctr(), insn.operands[0]);
+        printCounterConditionalBranch(insn.operands[0], fmt::format("{}.u32 != 0", ctr()));
         break;
 
 
     case PPC_INST_BDNZF:
         // NOTE: assuming eq here as a shortcut because all the instructions in the game do that
         println("\t--{}.u64;", ctr());
-        println("\tif ({}.u32 != 0 && !{}.eq) goto loc_{:X};", ctr(), cr(insn.operands[0] / 4), insn.operands[1]);
+        printCounterConditionalBranch(insn.operands[1], fmt::format("{}.u32 != 0 && !{}.eq", ctr(), cr(insn.operands[0] / 4)));
         break;
 
 
     case PPC_INST_BDNZT:
         // NOTE(crack): Same note as BDNZF but true instead of false
         println("\t--{}.u64;", ctr());
-        println("\tif ({}.u32 != 0 && {}.eq) goto loc_{:X};", ctr(), cr(insn.operands[0] / 4), insn.operands[1]);
+        printCounterConditionalBranch(insn.operands[1], fmt::format("{}.u32 != 0 && {}.eq", ctr(), cr(insn.operands[0] / 4)));
         break;
 
 
@@ -2643,7 +2659,7 @@ bool Recompiler::Recompile(
             break;
 
         case 5: // float16_4
-            if (insn.operands[3] != 2 || insn.operands[4] != 2)
+            if (insn.operands[3] != 2 || (insn.operands[4] != 0 && insn.operands[4] != 2))
                 fmt::println("Unexpected float16_4 pack instruction at {:X}", base);
 
             for (size_t i = 0; i < 4; i++)
@@ -3054,7 +3070,7 @@ bool Recompiler::Recompile(
     {
         constexpr std::string_view fields[] = { "lt", "gt", "eq", "so" };
         println("\t--{}.u64;", ctr());
-        println("\tif ({}.u32 == 0 && !{}.{}) goto loc_{:X};", ctr(), cr(insn.operands[0] / 4), fields[insn.operands[0] % 4], insn.operands[1]);
+        printCounterConditionalBranch(insn.operands[1], fmt::format("{}.u32 == 0 && !{}.{}", ctr(), cr(insn.operands[0] / 4), fields[insn.operands[0] % 4]));
         break;
     }
 
@@ -3368,13 +3384,14 @@ bool Recompiler::Recompile(
 
 
     case PPC_INST_VSLO:
+    case PPC_INST_VSLO128:
         printSetFlushMode(true);
-        println("\tsimd::vec128i shift_amt = simd::srli_i16({}.v128, 3);", v(insn.operands[2]));
-        println("\tint shift = simd::extract_u8(shift_amt, 15) & 0x1F;");
-        println("\tif (shift >= 16) {{");
-        println("\t\t{}.v128 = simd::zero_i128();", v(insn.operands[0]));
-        println("\t}} else {{");
-        println("\t\t{}.v128 = simd::alignr_i8(simd::zero_i128(), {}.v128, 16 - shift);", v(insn.operands[0]), v(insn.operands[1]));
+        println("\t{{");
+        println("\t\tconst int shift = {}.u8[15] >> 3;", v(insn.operands[2]));
+        println("\t\tfor (int i = 0; i < 16; i++)");
+        println("\t\t\t{}.u8[i] = shift < 16 && i < shift ? {}.u8[i + 16 - shift] : 0;", vTemp(), v(insn.operands[1]));
+        println("\t\t{}.u64[0] = {}.u64[0];", v(insn.operands[0]), vTemp());
+        println("\t\t{}.u64[1] = {}.u64[1];", v(insn.operands[0]), vTemp());
         println("\t}}");
         break;
 

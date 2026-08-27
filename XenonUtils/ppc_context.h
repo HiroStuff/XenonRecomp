@@ -113,6 +113,15 @@
 #define PPC_CALL_INDIRECT_FUNC(x) (PPC_LOOKUP_FUNC(base, x))(ctx, base)
 #endif
 
+namespace mem
+{
+    template <bool>
+    inline uint16_t loadVolatileU16(const uint8_t* address) noexcept
+    {
+        return *reinterpret_cast<const volatile uint16_t*>(address);
+    }
+}
+
 typedef void PPCFunc(struct PPCContext& __restrict__ ctx, uint8_t* base);
 
 struct PPCFuncMapping
@@ -193,6 +202,7 @@ struct PPCCRRegister
 
 union alignas(0x10) PPCVRegister
 {
+    __m128i v128;
     int8_t s8[16];
     uint8_t u8[16];
     int16_t s16[8];
@@ -204,6 +214,68 @@ union alignas(0x10) PPCVRegister
     float f32[4];
     double f64[2];
 };
+
+namespace simd
+{
+    using vec128i = __m128i;
+
+    inline vec128i to_vec128i(const PPCVRegister& value) noexcept { return value.v128; }
+    inline vec128i load_i8(const int8_t* value) noexcept { return _mm_load_si128((const __m128i*)value); }
+    inline vec128i load_u8(const uint8_t* value) noexcept { return _mm_load_si128((const __m128i*)value); }
+    inline vec128i load_i16(const int16_t* value) noexcept { return _mm_load_si128((const __m128i*)value); }
+    inline vec128i load_u16(const uint16_t* value) noexcept { return _mm_load_si128((const __m128i*)value); }
+    inline vec128i load_i32(const int32_t* value) noexcept { return _mm_load_si128((const __m128i*)value); }
+    inline void store_i8(int8_t* value, vec128i data) noexcept { _mm_store_si128((__m128i*)value, data); }
+    inline void store_u8(uint8_t* value, vec128i data) noexcept { _mm_store_si128((__m128i*)value, data); }
+    inline void store_i16(int16_t* value, vec128i data) noexcept { _mm_store_si128((__m128i*)value, data); }
+    inline void store_u16(uint16_t* value, vec128i data) noexcept { _mm_store_si128((__m128i*)value, data); }
+    inline void store_i32(int32_t* value, vec128i data) noexcept { _mm_store_si128((__m128i*)value, data); }
+    inline void store_u32(uint32_t* value, vec128i data) noexcept { _mm_store_si128((__m128i*)value, data); }
+    inline uint8_t extract_u8(vec128i value, int index) noexcept
+    {
+        alignas(16) uint8_t bytes[16];
+        _mm_store_si128((__m128i*)bytes, value);
+        return bytes[index];
+    }
+    inline vec128i load_and_shuffle(const uint8_t* value, const uint8_t* mask) noexcept
+    {
+        return _mm_shuffle_epi8(_mm_load_si128((const __m128i*)value), _mm_load_si128((const __m128i*)mask));
+    }
+    inline void store_shuffled(PPCVRegister& value, vec128i data) noexcept { value.v128 = data; }
+    inline vec128i add_saturate_i8(vec128i left, vec128i right) noexcept { return _mm_adds_epi8(left, right); }
+    inline vec128i and_u8(vec128i left, vec128i right) noexcept { return _mm_and_si128(left, right); }
+    inline vec128i cmpeq_i16(vec128i left, vec128i right) noexcept { return _mm_cmpeq_epi16(left, right); }
+    inline vec128i cmpgt_i16(vec128i left, vec128i right) noexcept { return _mm_cmpgt_epi16(left, right); }
+    inline vec128i cmpgt_i32(vec128i left, vec128i right) noexcept { return _mm_cmpgt_epi32(left, right); }
+    inline vec128i set1_i8(int8_t value) noexcept { return _mm_set1_epi8(value); }
+    inline vec128i set1_i32(int32_t value) noexcept { return _mm_set1_epi32(value); }
+    inline vec128i sub_saturate_i8(vec128i left, vec128i right) noexcept { return _mm_subs_epi8(left, right); }
+    inline vec128i sub_u8(vec128i left, vec128i right) noexcept { return _mm_sub_epi8(left, right); }
+    inline vec128i srai_i32(vec128i value, int shift) noexcept { return _mm_sra_epi32(value, _mm_cvtsi32_si128(shift)); }
+    inline vec128i add_i32(vec128i left, vec128i right) noexcept { return _mm_add_epi32(left, right); }
+    inline vec128i min_i32(vec128i left, vec128i right) noexcept { return _mm_min_epi32(left, right); }
+    inline vec128i add_saturate_i32(vec128i left, vec128i right) noexcept
+    {
+        alignas(16) int32_t a[4], b[4], out[4];
+        _mm_store_si128((__m128i*)a, left);
+        _mm_store_si128((__m128i*)b, right);
+        for (int i = 0; i < 4; i++)
+        {
+            int64_t sum = int64_t(a[i]) + int64_t(b[i]);
+            out[i] = sum > INT32_MAX ? INT32_MAX : (sum < INT32_MIN ? INT32_MIN : int32_t(sum));
+        }
+        return _mm_load_si128((const __m128i*)out);
+    }
+    inline vec128i shift_right_arithmetic_i8(vec128i value, vec128i shift) noexcept
+    {
+        alignas(16) int8_t input[16], output[16];
+        alignas(16) uint8_t amount[16];
+        _mm_store_si128((__m128i*)input, value);
+        _mm_store_si128((__m128i*)amount, shift);
+        for (int i = 0; i < 16; i++) output[i] = input[i] >> amount[i];
+        return _mm_load_si128((const __m128i*)output);
+    }
+}
 
 #define PPC_ROUND_NEAREST 0x00
 #define PPC_ROUND_TOWARD_ZERO 0x01
