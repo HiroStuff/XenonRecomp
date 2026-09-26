@@ -53,104 +53,120 @@ uint32_t BytePatternSearch(uint8_t* data, const uint32_t dataSize, const uint32_
 
 void FindSetjmpLongjmp(Image& image)
 {
-    // Search for longjmp by finding RtlUnwind calls
-    // setjmp typically appears just after longjmp
-    uint32_t longjmp_address = UINT32_MAX;
-    uint32_t setjmp_address = UINT32_MAX;
+    uint32_t rtlUnwindAddress = UINT32_MAX;
 
-    for (const auto& section : image.sections) {
-        if (!(section.flags & SectionFlags_Code)) {
-            continue;
-        }
-
-        ppc_insn insn;
-        uint32_t* code = (uint32_t*)section.data;
-        uint32_t codeCount = section.size / 4;
-        uint32_t baseAddress = section.base;
-
-        // Search for calls to RtlUnwind (bl instruction)
-        for (uint32_t i = 0; i < codeCount; i++) {
-            ppc::Disassemble(&code[i], baseAddress + (i * 4), insn);
-            
-            if (insn.opcode != nullptr && insn.opcode->id == PPC_INST_BL) {
-                // BL is a branch and link instruction
-                // Check if this could be calling RtlUnwind
-                // We'll mark this location as a potential longjmp
-                // longjmp is often at or near the call to RtlUnwind
-                if (longjmp_address == UINT32_MAX) {
-                    longjmp_address = baseAddress + (i * 4);
-                }
-                
-                // setjmp typically appears shortly after longjmp
-                // Search forward for the next function entry point
-                if (longjmp_address != UINT32_MAX && setjmp_address == UINT32_MAX && i > 0) {
-                    // Look for the function that follows (usually marked by a standard prologue)
-                    // For now, set it to the next BL instruction after longjmp
-                    for (uint32_t j = i + 1; j < std::min(i + 100u, codeCount); j++) {
-                        ppc::Disassemble(&code[j], baseAddress + (j * 4), insn);
-                        if (insn.opcode != nullptr && insn.opcode->id == PPC_INST_BL) {
-                            setjmp_address = baseAddress + (j * 4);
-                            break;
-                        }
-                    }
-                }
-                
-                if (longjmp_address != UINT32_MAX && setjmp_address != UINT32_MAX) {
-                    break;
-                }
-            }
-        }
-
-        if (longjmp_address != UINT32_MAX && setjmp_address != UINT32_MAX) {
+    for (const auto& symbol : image.symbols)
+    {
+        if (symbol.name == "__imp__RtlUnwind")
+        {
+            rtlUnwindAddress = static_cast<uint32_t>(symbol.address);
             break;
         }
     }
 
-    if (longjmp_address == UINT32_MAX) {
-        fmt::println("longjmp_address = FAILED TO FIND (0x{:X})", longjmp_address);
-    } else {
-        fmt::println("longjmp_address = 0x{:X}", longjmp_address);
+    if (rtlUnwindAddress == UINT32_MAX)
+    {
+        fmt::println("RtlUnwind is not imported by this XEX.");
+        fmt::println("Do not try to guess longjmp/setjmp addresses.");
+        return;
     }
-    
-    if (setjmp_address == UINT32_MAX) {
-        fmt::println("setjmp_address = FAILED TO FIND (0x{:X})", setjmp_address);
-    } else {
-        fmt::println("setjmp_address = 0x{:X}", setjmp_address);
+
+    fmt::println("RtlUnwind thunk = 0x{:X}", rtlUnwindAddress);
+
+    bool foundCaller = false;
+
+    for (const auto& section : image.sections)
+    {
+        if (!(section.flags & SectionFlags_Code))
+            continue;
+
+        auto* code = reinterpret_cast<uint32_t*>(section.data);
+        const uint32_t count = section.size / 4;
+
+        for (uint32_t i = 0; i < count; i++)
+        {
+            const uint32_t instruction = ByteSwap(code[i]);
+
+            if (PPC_OP(instruction) != PPC_OP_B)
+                continue;
+
+            if (!PPC_BL(instruction))
+                continue;
+
+            if (PPC_BA(instruction))
+                continue;
+
+            const uint32_t address =
+            static_cast<uint32_t>(section.base + i * 4);
+
+            const uint32_t target =
+            address + PPC_BI(instruction);
+
+            if (target == rtlUnwindAddress)
+            {
+                fmt::println(
+                    "RtlUnwind call at 0x{:X}",
+                    address
+                );
+
+                foundCaller = true;
+            }
+        }
     }
+
+    if (!foundCaller)
+        fmt::println("No direct calls to RtlUnwind found.");
 }
 
 void RegisterFunctionsSearch(Image& image)
 {
-    uint32_t baseAddress = UINT32_MAX;
+    auto searchPattern = [&](const uint8_t* pattern, size_t patternSize) -> uint32_t
+    {
+        for (const auto& section : image.sections)
+        {
+            if (!(section.flags & SectionFlags_Code))
+                continue;
 
-    for (const auto& section : image.sections) {
-        if (section.name == ".text") {
-            baseAddress = section.base;
+            uint32_t address = BytePatternSearch(
+                section.data,
+                section.size,
+                static_cast<uint32_t>(section.base),
+                                                 pattern,
+                                                 patternSize);
 
-            if (baseAddress == UINT32_MAX) {
-                fmt::println("Could not find \".text\" section.");
-                return;
-            }
-
-            uint32_t restgprlr_14 = BytePatternSearch(section.data, section.size, baseAddress, RESTGPRLR_14, sizeof(RESTGPRLR_14));
-            uint32_t savegprlr_14 = BytePatternSearch(section.data, section.size, baseAddress, SAVEGPRLR_14, sizeof(SAVEGPRLR_14));
-            uint32_t restfpr_14 = BytePatternSearch(section.data, section.size, baseAddress, RESTFPR_14, sizeof(RESTFPR_14));
-            uint32_t savefpr_14 = BytePatternSearch(section.data, section.size, baseAddress, SAVEFPR_14, sizeof(SAVEFPR_14));
-            uint32_t restvmx_14 = BytePatternSearch(section.data, section.size, baseAddress, RESTVMX_14, sizeof(RESTVMX_14));
-            uint32_t savevmx_14 = BytePatternSearch(section.data, section.size, baseAddress, SAVEVMX_14, sizeof(SAVEVMX_14));
-            uint32_t restvmx_64 = BytePatternSearch(section.data, section.size, baseAddress, RESTVMX_64, sizeof(RESTVMX_64));
-            uint32_t savevmx_64 = BytePatternSearch(section.data, section.size, baseAddress, SAVEVMX_64, sizeof(SAVEVMX_64));
-
-            fmt::println("restgprlr_14_address = 0x{:X}", restgprlr_14);
-            fmt::println("savegprlr_14_address = 0x{:X}", savegprlr_14);
-            fmt::println("restfpr_14_address = 0x{:X}", restfpr_14);
-            fmt::println("savefpr_14_address = 0x{:X}", savefpr_14);
-            fmt::println("restvmx_14_address = 0x{:X}", restvmx_14);
-            fmt::println("savevmx_14_address = 0x{:X}", savevmx_14);
-            fmt::println("restvmx_64_address = 0x{:X}", restvmx_64);
-            fmt::println("savevmx_64_address = 0x{:X}", savevmx_64);
+            if (address != UINT32_MAX)
+                return address;
         }
-    }
+
+        return UINT32_MAX;
+    };
+
+    const uint32_t restgprlr_14 = searchPattern(RESTGPRLR_14, sizeof(RESTGPRLR_14));
+    const uint32_t savegprlr_14 = searchPattern(SAVEGPRLR_14, sizeof(SAVEGPRLR_14));
+    const uint32_t restfpr_14 = searchPattern(RESTFPR_14, sizeof(RESTFPR_14));
+    const uint32_t savefpr_14 = searchPattern(SAVEFPR_14, sizeof(SAVEFPR_14));
+    const uint32_t restvmx_14 = searchPattern(RESTVMX_14, sizeof(RESTVMX_14));
+    const uint32_t savevmx_14 = searchPattern(SAVEVMX_14, sizeof(SAVEVMX_14));
+    const uint32_t restvmx_64 = searchPattern(RESTVMX_64, sizeof(RESTVMX_64));
+    const uint32_t savevmx_64 = searchPattern(SAVEVMX_64, sizeof(SAVEVMX_64));
+
+    auto printAddress = [](const char* name, uint32_t address)
+    {
+        if (address == UINT32_MAX)
+            fmt::println("{} = FAILED TO FIND", name);
+        else
+            fmt::println("{} = 0x{:X}", name, address);
+    };
+
+    printAddress("restgprlr_14_address", restgprlr_14);
+    printAddress("savegprlr_14_address", savegprlr_14);
+    printAddress("restfpr_14_address", restfpr_14);
+    printAddress("savefpr_14_address", savefpr_14);
+    printAddress("restvmx_14_address", restvmx_14);
+    printAddress("savevmx_14_address", savevmx_14);
+    printAddress("restvmx_64_address", restvmx_64);
+    printAddress("savevmx_64_address", savevmx_64);
+
     FindSetjmpLongjmp(image);
 }
 

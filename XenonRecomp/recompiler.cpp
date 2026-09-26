@@ -97,6 +97,13 @@ bool Recompiler::LoadConfig(const std::string_view& configFilePath)
     }
 
     image = Image::ParseImage(file.data(), file.size());
+
+    if (image.data == nullptr || image.size == 0)
+    {
+        fmt::println("ERROR: Unable to parse XEX image");
+        return false;
+    }
+
     return true;
 }
 
@@ -181,23 +188,30 @@ void Recompiler::Analyse()
         image.symbols.emplace(fmt::format("sub_{:X}", address), address, size, Symbol_Function);
     }
 
-    auto& pdata = *image.Find(".pdata");
-    size_t count = pdata.size / sizeof(IMAGE_CE_RUNTIME_FUNCTION);
-    auto* pf = (IMAGE_CE_RUNTIME_FUNCTION*)pdata.data;
-    for (size_t i = 0; i < count; i++)
+    const auto* pdata = image.Find(".pdata");
+    if (pdata != nullptr)
     {
-        auto fn = pf[i];
-        fn.BeginAddress = ByteSwap(fn.BeginAddress);
-        fn.Data = ByteSwap(fn.Data);
-
-        if (image.symbols.find(fn.BeginAddress) == image.symbols.end())
+        size_t count = pdata->size / sizeof(IMAGE_CE_RUNTIME_FUNCTION);
+        auto* pf = (IMAGE_CE_RUNTIME_FUNCTION*)pdata->data;
+        for (size_t i = 0; i < count; i++)
         {
-            auto& f = functions.emplace_back();
-            f.base = fn.BeginAddress;
-            f.size = fn.FunctionLength * 4;
+            auto fn = pf[i];
+            fn.BeginAddress = ByteSwap(fn.BeginAddress);
+            fn.Data = ByteSwap(fn.Data);
 
-            image.symbols.emplace(fmt::format("sub_{:X}", f.base), f.base, f.size, Symbol_Function);
+            if (image.symbols.find(fn.BeginAddress) == image.symbols.end())
+            {
+                auto& f = functions.emplace_back();
+                f.base = fn.BeginAddress;
+                f.size = fn.FunctionLength * 4;
+
+                image.symbols.emplace(fmt::format("sub_{:X}", f.base), f.base, f.size, Symbol_Function);
+            }
         }
+    }
+    else
+    {
+        fmt::println("WARNING: .pdata section not found, skipping pdata analysis");
     }
 
     for (const auto& section : image.sections)
@@ -1391,6 +1405,16 @@ bool Recompiler::Recompile(
         break;
 
 
+    case PPC_INST_LMW:
+        print("\t{} = ", ea());
+        if (insn.operands[2] != 0)
+            print("{}.u32 + ", r(insn.operands[2]));
+        println("{};", int32_t(insn.operands[1]));
+        for (size_t i = insn.operands[0]; i < 32; i++)
+            println("\t{}.u64 = PPC_LOAD_U32({} + {});", r(i), ea(), (i - insn.operands[0]) * 4);
+        break;
+
+
     case PPC_INST_LWZ:
         print("\t{}.u64 = PPC_LOAD_U32(", r(insn.operands[0]));
         if (insn.operands[2] != 0)
@@ -1914,6 +1938,16 @@ bool Recompiler::Recompile(
         if (insn.operands[1] != 0)
             print("{}.u32 + ", r(insn.operands[1]));
         println("{}.u32) & ~0xF)), _mm_shuffle_epi8(_mm_load_si128((__m128i*){}.u8), _mm_load_si128((__m128i*)VectorMaskL)));", r(insn.operands[2]), v(insn.operands[0]));
+        break;
+
+
+    case PPC_INST_STMW:
+        print("\t{} = ", ea());
+        if (insn.operands[2] != 0)
+            print("{}.u32 + ", r(insn.operands[2]));
+        println("{};", int32_t(insn.operands[1]));
+        for (size_t i = insn.operands[0]; i < 32; i++)
+            println("\tPPC_STORE_U32({} + {}, {}.u32);", ea(), (i - insn.operands[0]) * 4, r(i));
         break;
 
 
@@ -3861,4 +3895,3 @@ void Recompiler::SaveCurrentOutData(const std::string_view& name)
         out.clear();
     }
 }
-
