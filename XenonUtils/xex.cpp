@@ -141,15 +141,15 @@ Image Xex2LoadImage(const uint8_t* data, size_t dataSize)
 
         std::unique_ptr<uint8_t[]> decryptedData;
         const uint8_t* srcData = nullptr;
-
-        if (fileFormatInfo->encryptionType == XEX_ENCRYPTION_NORMAL)
+        bool usingDevkitKey = false;
+        auto decryptData = [&](const uint8_t* masterKey)
         {
             constexpr uint32_t KeySize = 16;
             AES_ctx aesContext;
 
             uint8_t decryptedKey[KeySize];
             memcpy(decryptedKey, security->aesKey, KeySize);
-            AES_init_ctx_iv(&aesContext, Xex2RetailKey, AESBlankIV);
+            AES_init_ctx_iv(&aesContext, masterKey, AESBlankIV);
             AES_CBC_decrypt_buffer(&aesContext, decryptedKey, KeySize);
 
             decryptedData = std::make_unique<uint8_t[]>(dataSize - header->headerSize);
@@ -158,6 +158,11 @@ Image Xex2LoadImage(const uint8_t* data, size_t dataSize)
             AES_CBC_decrypt_buffer(&aesContext, decryptedData.get(), dataSize - header->headerSize);
 
             srcData = decryptedData.get();
+        };
+
+        if (fileFormatInfo->encryptionType == XEX_ENCRYPTION_NORMAL)
+        {
+            decryptData(Xex2RetailKey);
         }
         else
         {
@@ -196,64 +201,83 @@ Image Xex2LoadImage(const uint8_t* data, size_t dataSize)
         }
         else if (fileFormatInfo->compressionType == XEX_COMPRESSION_NORMAL)
         {
-            result = std::make_unique<uint8_t[]>(imageSize);
-            auto* destData = result.get();
+            bool retryDecryption = false;
 
-            const Xex2CompressedBlockInfo* blocks = &((const Xex2FileNormalCompressionInfo*)(fileFormatInfo + 1))->firstBlock;
-            const uint32_t headerSize = header->headerSize.get();
-
-            const uint32_t exeLength = dataSize - headerSize;
-            const uint8_t* exeBuffer = srcData;
-
-            auto compressBuffer = std::make_unique<uint8_t[]>(exeLength);
-            const uint8_t* p = NULL;
-            uint8_t* d = NULL;
-            sha1::SHA1 s;
-
-            p = exeBuffer;
-            d = compressBuffer.get();
-
-            uint8_t blockCalcedDigest[0x14];
-            while (blocks->blockSize) 
+            do
             {
-                const uint8_t* pNext = p + blocks->blockSize;
-                const auto* nextBlock = (const Xex2CompressedBlockInfo*)p;
+                retryDecryption = false;
+                result = std::make_unique<uint8_t[]>(imageSize);
+                auto* destData = result.get();
 
-                s.reset();
-                s.processBytes(p, blocks->blockSize);
-                s.finalize(blockCalcedDigest);
+                const Xex2CompressedBlockInfo* blocks = &((const Xex2FileNormalCompressionInfo*)(fileFormatInfo + 1))->firstBlock;
+                const uint32_t headerSize = header->headerSize.get();
 
-                if (memcmp(blockCalcedDigest, blocks->blockHash, 0x14) != 0)
-                    return {};
+                const uint32_t exeLength = dataSize - headerSize;
+                const uint8_t* exeBuffer = srcData;
 
-                p += 4;
-                p += 20;
+                auto compressBuffer = std::make_unique<uint8_t[]>(exeLength);
+                const uint8_t* p = NULL;
+                uint8_t* d = NULL;
+                sha1::SHA1 s;
 
-                while (true) 
+                p = exeBuffer;
+                d = compressBuffer.get();
+
+                uint8_t blockCalcedDigest[0x14];
+                while (blocks->blockSize) 
                 {
-                    const size_t chunkSize = (p[0] << 8) | p[1];
-                    p += 2;
+                    const uint8_t* pNext = p + blocks->blockSize;
+                    const auto* nextBlock = (const Xex2CompressedBlockInfo*)p;
 
-                    if (!chunkSize)
-                        break;
+                    s.reset();
+                    s.processBytes(p, blocks->blockSize);
+                    s.finalize(blockCalcedDigest);
 
-                    memcpy(d, p, chunkSize);
-                    p += chunkSize;
-                    d += chunkSize;
+                    if (memcmp(blockCalcedDigest, blocks->blockHash, 0x14) != 0)
+                    {
+                        if (fileFormatInfo->encryptionType == XEX_ENCRYPTION_NORMAL && !usingDevkitKey)
+                        {
+                            usingDevkitKey = true;
+                            decryptData(Xex2DevkitKey);
+                            retryDecryption = true;
+                            break;
+                        }
+
+                        return {};
+                    }
+
+                    p += 4;
+                    p += 20;
+
+                    while (true) 
+                    {
+                        const size_t chunkSize = (p[0] << 8) | p[1];
+                        p += 2;
+
+                        if (!chunkSize)
+                            break;
+
+                        memcpy(d, p, chunkSize);
+                        p += chunkSize;
+                        d += chunkSize;
+                    }
+
+                    p = pNext;
+                    blocks = nextBlock;
                 }
 
-                p = pNext;
-                blocks = nextBlock;
-            }
+                if (retryDecryption)
+                    continue;
 
-            int resultCode = 0;
-            uint32_t uncompressedSize = security->imageSize;
-            uint8_t* buffer = destData;
+                int resultCode = 0;
+                uint32_t uncompressedSize = security->imageSize;
+                uint8_t* buffer = destData;
 
-            resultCode = lzxDecompress(compressBuffer.get(), d - compressBuffer.get(), buffer, uncompressedSize, ((const Xex2FileNormalCompressionInfo*)(fileFormatInfo + 1))->windowSize, nullptr, 0);
+                resultCode = lzxDecompress(compressBuffer.get(), d - compressBuffer.get(), buffer, uncompressedSize, ((const Xex2FileNormalCompressionInfo*)(fileFormatInfo + 1))->windowSize, nullptr, 0);
 
-            if (resultCode)
-                return {};
+                if (resultCode)
+                    return {};
+            } while (retryDecryption);
         }
     }
 

@@ -42,7 +42,7 @@ Function Function::Analyze(const void* code, size_t size, size_t base)
 {
     Function fn{ base, 0 };
 
-    if (*((uint32_t*)code + 1) == 0x04000048) // shifted ptr tail call
+    if (size >= 8 && *((uint32_t*)code + 1) == 0x04000048) // shifted ptr tail call
     {
         fn.size = 0x8;
         return fn;
@@ -55,6 +55,7 @@ Function Function::Analyze(const void* code, size_t size, size_t base)
     const auto* data = (uint32_t*)code;
     const auto* dataStart = data;
     const auto* dataEnd = (uint32_t*)((uint8_t*)code + size);
+    const size_t endAddress = base + size;
     std::vector<size_t> blockStack{};
     blockStack.reserve(32);
     blockStack.emplace_back();
@@ -62,7 +63,7 @@ Function Function::Analyze(const void* code, size_t size, size_t base)
     #define RESTORE_DATA() if (!blockStack.empty()) data = (dataStart + ((blocks[blockStack.back()].base + blocks[blockStack.back()].size) / sizeof(*data))) - 1; // continue adds one
 
     // TODO: Branch fallthrough
-    for (; data <= dataEnd ; ++data)
+    for (; data < dataEnd; ++data)
     {
         const size_t addr = base + ((data - dataStart) * sizeof(*data));
         if (blockStack.empty())
@@ -110,29 +111,34 @@ Function Function::Analyze(const void* code, size_t size, size_t base)
             // left block: false case
             // right block: true case
             const size_t lBase = (addr - base) + 4;
-            const size_t rBase = (addr + PPC_BD(instruction)) - base;
 
             // these will be -1 if it's our first time seeing these blocks
             auto lBlock = fn.SearchBlock(base + lBase);
 
             if (lBlock == -1)
             {
-                blocks.emplace_back(lBase, 0).projectedSize = rBase - lBase;
+                blocks.emplace_back(lBase, 0);
                 lBlock = blocks.size() - 1;
+
+                if (branchDest > addr + 4 && branchDest < endAddress)
+                    blocks[lBlock].projectedSize = branchDest - (addr + 4);
 
                 // push this first, this gets overriden by the true case as it'd be further away
                 DEBUG(blocks[lBlock].parent = blockBase);
                 blockStack.emplace_back(lBlock);
             }
 
-            size_t rBlock = fn.SearchBlock(base + rBase);
-            if (rBlock == -1)
+            if (branchDest >= base && branchDest < endAddress)
             {
-                blocks.emplace_back(branchDest - base, 0);
-                rBlock = blocks.size() - 1;
+                size_t rBlock = fn.SearchBlock(branchDest);
+                if (rBlock == -1)
+                {
+                    blocks.emplace_back(branchDest - base, 0);
+                    rBlock = blocks.size() - 1;
 
-                DEBUG(blocks[rBlock].parent = blockBase);
-                blockStack.emplace_back(rBlock);
+                    DEBUG(blocks[rBlock].parent = blockBase);
+                    blockStack.emplace_back(rBlock);
+                }
             }
 
             RESTORE_DATA();
@@ -148,15 +154,15 @@ Function Function::Analyze(const void* code, size_t size, size_t base)
                     assert(!PPC_BA(instruction));
                     const size_t branchDest = addr + PPC_BI(instruction);
 
-                    const size_t branchBase = branchDest - base;
-                    const size_t branchBlock = fn.SearchBlock(branchDest);
-
-                    if (branchDest < base)
+                    if (branchDest < base || branchDest >= endAddress)
                     {
-                        // Branches before base are just tail calls, no need to chase after those
+                        // Branches outside the supplied range are tail calls or external control flow.
                         RESTORE_DATA();
                         continue;
                     }
+
+                    const size_t branchBase = branchDest - base;
+                    const size_t branchBlock = fn.SearchBlock(branchDest);
 
                     // carry over our projection if blocks are next to each other
                     const bool isContinuous = branchBase == curBlock.base + curBlock.size;
@@ -186,7 +192,7 @@ Function Function::Analyze(const void* code, size_t size, size_t base)
                     {
                         // right block's just going to return
                         const size_t lBase = (addr - base) + 4;
-                        size_t lBlock = fn.SearchBlock(lBase);
+                        size_t lBlock = fn.SearchBlock(base + lBase);
                         if (lBlock == -1)
                         {
                             blocks.emplace_back(lBase, 0);
