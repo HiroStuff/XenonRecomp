@@ -79,6 +79,8 @@
 #define PPC_STORE_U32(x, y) *(volatile uint32_t*)(base + (x)) = __builtin_bswap32(y)
 #endif
 
+extern "C" void DxRecompMmioStoreU32(uint8_t* base, uint32_t address, uint32_t value);
+
 #ifndef PPC_STORE_U64
 #define PPC_STORE_U64(x, y) *(volatile uint64_t*)(base + (x)) = __builtin_bswap64(y)
 #endif
@@ -94,7 +96,7 @@
 #endif
 
 #ifndef PPC_MM_STORE_U32
-#define PPC_MM_STORE_U32(x, y)  PPC_STORE_U32(x, y)
+#define PPC_MM_STORE_U32(x, y)  DxRecompMmioStoreU32(base, x, y)
 #endif
 
 #ifndef PPC_MM_STORE_U64
