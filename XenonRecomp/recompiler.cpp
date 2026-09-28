@@ -2,6 +2,7 @@
 #include "recompiler.h"
 #include <xex_patcher.h>
 #include <sstream>
+#include <algorithm>
 
 static uint64_t ComputeMask(uint32_t mstart, uint32_t mstop)
 {
@@ -272,7 +273,59 @@ void Recompiler::Analyse()
         }
     }
 
-    std::sort(functions.begin(), functions.end(), [](auto& lhs, auto& rhs) { return lhs.base < rhs.base; });
+    auto findCodeSection = [this](size_t address) -> const Section*
+        {
+            for (const auto& section : image.sections)
+            {
+                if ((section.flags & SectionFlags_Code) != 0 &&
+                    address >= section.base &&
+                    address < section.base + section.size)
+                {
+                    return &section;
+                }
+            }
+
+            return nullptr;
+        };
+
+    auto hasFunctionContaining = [this](size_t address)
+        {
+            return std::any_of(functions.begin(), functions.end(), [address](const Function& fn)
+                {
+                    return address >= fn.base && address < fn.base + fn.size;
+                });
+        };
+
+    for (const auto& symbol : image.symbols)
+    {
+        if (symbol.type != Symbol_Function || hasFunctionContaining(symbol.address))
+        {
+            continue;
+        }
+
+        const Section* section = findCodeSection(symbol.address);
+        if (section == nullptr)
+        {
+            continue;
+        }
+
+        auto* data = section->data + symbol.address - section->base;
+        functions.emplace_back(Function::Analyze(data, section->base + section->size - symbol.address, symbol.address));
+    }
+
+    std::sort(functions.begin(), functions.end(), [](auto& lhs, auto& rhs)
+        {
+            if (lhs.base != rhs.base)
+            {
+                return lhs.base < rhs.base;
+            }
+
+            return lhs.size > rhs.size;
+        });
+    functions.erase(std::unique(functions.begin(), functions.end(), [](auto& lhs, auto& rhs)
+        {
+            return lhs.base == rhs.base;
+        }), functions.end());
 }
 
 bool Recompiler::Recompile(
@@ -3582,7 +3635,7 @@ bool Recompiler::Recompile(const Function& fn)
 
     auto symbol = image.symbols.find(fn.base);
     std::string name;
-    if (symbol != image.symbols.end())
+    if (symbol != image.symbols.end() && symbol->address == fn.base && symbol->type == Symbol_Function)
     {
         name = symbol->name;
     }
